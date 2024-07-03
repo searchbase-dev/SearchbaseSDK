@@ -116,82 +116,93 @@ public class SearchbaseSDK {
   /// - Parameters:
   ///   - index: The name of the index to search.
   ///   - filters: Optional array of filters to apply to the search.
+  ///   - sort: Optional array of sort options to apply to the search results.
   ///   - select: Optional array of field names to include in the results.
   ///   - limit: Optional limit on the number of results to return.
   ///   - offset: Optional offset for pagination.
   /// - Returns: A SearchResponse containing the search results.
   /// - Throws: A SearchError if the operation fails.
-    public func search(
-        index: String, filters: [Filter]? = nil, select: [String]? = nil, limit: Int? = nil,
-        offset: Int? = nil
-    ) async throws -> SearchResponse {
-        guard let url = URL(string: "\(baseURL)/search") else {
-            throw SearchError.invalidURL
-        }
-
-        var queryDict: [String: Any] = ["index": index]
-        if let filters = filters { queryDict["filters"] = filters.map { $0.toDictionary() } }
-        if let select = select { queryDict["select"] = select }
-        if let limit = limit { queryDict["limit"] = limit }
-        if let offset = offset { queryDict["offset"] = offset }
-
-        let body = ["query": queryDict]
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.addValue(apiToken, forHTTPHeaderField: "x-searchbase-token")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-        print("Request URL: \(url)")
-        print("Request Headers: \(request.allHTTPHeaderFields ?? [:])")
-        print("Request Body: \(String(data: request.httpBody ?? Data(), encoding: .utf8) ?? "")")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw SearchError.unexpectedResponse(0)
-        }
-
-        print("Response status code: \(httpResponse.statusCode)")
-        print("Response headers: \(httpResponse.allHeaderFields)")
-        print("Response body: \(String(data: data, encoding: .utf8) ?? "")")
-
-        switch httpResponse.statusCode {
-        case 200...299:
-            do {
-                let decoder = JSONDecoder()
-                let searchResponse = try decoder.decode(SearchResponse.self, from: data)
-                return searchResponse
-            } catch {
-                print("Decoding error: \(error)")
-                if let decodingError = error as? DecodingError {
-                    print("Decoding error details: \(decodingError)")
-                }
-                throw SearchError.decodingError(error)
-            }
-        case 400...499:
-            let errorBody = String(data: data, encoding: .utf8) ?? "No error message"
-            print("API Error Body: \(errorBody)")
-            if let apiError = try? JSONDecoder().decode(APIError.self, from: data) {
-                throw SearchError.apiError(apiError.message)
-            } else {
-                throw SearchError.unexpectedResponse(httpResponse.statusCode)
-            }
-        default:
-            throw SearchError.unexpectedResponse(httpResponse.statusCode)
-        }
+  public func search(
+    index: String,
+    filters: [Filter]? = nil,
+    sort: [Sort]? = nil,
+    select: [String]? = nil,
+    limit: Int? = nil,
+    offset: Int? = nil
+  ) async throws -> SearchResponse {
+    guard let url = URL(string: "\(baseURL)/search") else {
+      throw SearchError.invalidURL
     }
+
+    var queryDict: [String: Any] = ["index": index]
+    if let filters = filters { queryDict["filters"] = filters.map { $0.toDictionary() } }
+    if let sort = sort { queryDict["sort"] = sort.map { $0.toDictionary() } }
+    if let select = select { queryDict["select"] = select }
+    if let limit = limit { queryDict["limit"] = limit }
+    if let offset = offset { queryDict["offset"] = offset }
+
+    let body = ["query": queryDict]
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.addValue(apiToken, forHTTPHeaderField: "x-searchbase-token")
+    request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+    print("Request URL: \(url)")
+    print("Request Headers: \(request.allHTTPHeaderFields ?? [:])")
+    print("Request Body: \(String(data: request.httpBody ?? Data(), encoding: .utf8) ?? "")")
+
+    let (data, response) = try await URLSession.shared.data(for: request)
+
+    guard let httpResponse = response as? HTTPURLResponse else {
+      throw SearchError.unexpectedResponse(0)
+    }
+
+    print("Response status code: \(httpResponse.statusCode)")
+    print("Response headers: \(httpResponse.allHeaderFields)")
+    print("Response body: \(String(data: data, encoding: .utf8) ?? "")")
+
+    switch httpResponse.statusCode {
+    case 200...299:
+      do {
+        let decoder = JSONDecoder()
+        let searchResponse = try decoder.decode(SearchResponse.self, from: data)
+        return searchResponse
+      } catch {
+        print("Decoding error: \(error)")
+        if let decodingError = error as? DecodingError {
+          print("Decoding error details: \(decodingError)")
+        }
+        throw SearchError.decodingError(error)
+      }
+    case 400...499:
+      let errorBody = String(data: data, encoding: .utf8) ?? "No error message"
+      print("API Error Body: \(errorBody)")
+      if let apiError = try? JSONDecoder().decode(APIError.self, from: data) {
+        throw SearchError.apiError(apiError.message)
+      } else {
+        throw SearchError.unexpectedResponse(httpResponse.statusCode)
+      }
+    default:
+      throw SearchError.unexpectedResponse(httpResponse.statusCode)
+    }
+  }
 
   /// Performs a search operation that automatically fetches all results, handling pagination internally.
   /// - Parameters:
   ///   - index: The name of the index to search.
   ///   - filters: Optional array of filters to apply to the search.
+  ///   - sort: Optional array of sort options to apply to the search results.
   ///   - select: Optional array of field names to include in the results.
   ///   - batchSize: The number of results to fetch in each API call. Defaults to 100.
   /// - Returns: An AsyncThrowingStream that yields arrays of SearchResults.
   public func searchAll(
-    index: String, filters: [Filter]? = nil, select: [String]? = nil, batchSize: Int = 100
+    index: String,
+    filters: [Filter]? = nil,
+    sort: [Sort]? = nil,
+    select: [String]? = nil,
+    batchSize: Int = 100
   ) -> AsyncThrowingStream<[SearchResult], Error> {
     AsyncThrowingStream { continuation in
       Task {
@@ -202,7 +213,13 @@ public class SearchbaseSDK {
         repeat {
           do {
             let response = try await self.search(
-              index: index, filters: filters, select: select, limit: batchSize, offset: offset)
+              index: index,
+              filters: filters,
+              sort: sort,
+              select: select,
+              limit: batchSize,
+              offset: offset
+            )
             continuation.yield(response.records)
 
             totalFetched += response.records.count
@@ -218,6 +235,30 @@ public class SearchbaseSDK {
       }
     }
   }
+}
+
+/// Represents a sort option for search operations.
+public struct Sort: Codable {
+  public let field: String
+  public let direction: SortDirection
+
+  public init(field: String, direction: SortDirection) {
+    self.field = field
+    self.direction = direction
+  }
+
+  public func toDictionary() -> [String: Any] {
+    return [
+      "field": field,
+      "direction": direction.rawValue,
+    ]
+  }
+}
+
+/// Represents the direction of sorting.
+public enum SortDirection: String, Codable {
+  case ascending = "ASC"
+  case descending = "DESC"
 }
 
 /// Represents a filter to be applied in a search operation.

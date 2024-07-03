@@ -2,6 +2,79 @@ import Foundation
 
 /// A client for interacting with the Searchbase API.
 @available(macOS 10.15, iOS 13.0, *)
+
+public struct SearchResponse: Decodable {
+  public let total: Int
+  public let range: Range
+  public let records: [SearchResult]
+
+  public struct Range: Decodable {
+    public let start: Int
+    public let end: Int
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    total = try container.decode(Int.self, forKey: .total)
+    range = try container.decode(Range.self, forKey: .range)
+    records = try container.decode([SearchResult].self, forKey: .records)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case total, range, records
+  }
+}
+
+public struct SearchResult: Decodable {
+  public let id: String
+  public let title: String
+  public let url: String
+  public let rent: Int
+  public let bedrooms: Int
+  public let bathrooms: Int
+  public let source: String
+  public let neighborhood: Int
+  public let originalNeighborhood: String
+  public let thumbnailURLs: [String]
+  public let createdAt: Timestamp
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    title = try container.decode(String.self, forKey: .title)
+    url = try container.decode(String.self, forKey: .url)
+    rent = try container.decode(Int.self, forKey: .rent)
+    bedrooms = try container.decode(Int.self, forKey: .bedrooms)
+    bathrooms = try container.decode(Int.self, forKey: .bathrooms)
+    source = try container.decode(String.self, forKey: .source)
+    neighborhood = try container.decode(Int.self, forKey: .neighborhood)
+    originalNeighborhood = try container.decode(String.self, forKey: .originalNeighborhood)
+    thumbnailURLs = try container.decode([String].self, forKey: .thumbnailURLs)
+    createdAt = try container.decode(Timestamp.self, forKey: .createdAt)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, title, url, rent, bedrooms, bathrooms, source, neighborhood, originalNeighborhood
+    case thumbnailURLs
+    case createdAt
+  }
+}
+
+public struct Timestamp: Decodable {
+  public let _seconds: Int64
+  public let _nanoseconds: Int64
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    _seconds = try container.decode(Int64.self, forKey: ._seconds)
+    _nanoseconds = try container.decode(Int64.self, forKey: ._nanoseconds)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case _seconds, _nanoseconds
+  }
+}
+
 public class SearchbaseSDK {
   private let apiToken: String
   private let baseURL = "https://api.searchbase.dev"
@@ -13,12 +86,30 @@ public class SearchbaseSDK {
   }
 
   /// Represents errors that can occur when interacting with the Searchbase API.
-  public enum SearchError: Error {
+  public enum SearchError: Error, CustomStringConvertible {
     case invalidURL
     case networkError(Error)
     case noData
     case decodingError(Error)
     case apiError(String)
+    case unexpectedResponse(Int)
+
+    public var description: String {
+      switch self {
+      case .invalidURL:
+        return "Invalid URL for the API request."
+      case .networkError(let error):
+        return "Network error occurred: \(error.localizedDescription)"
+      case .noData:
+        return "No data received from the API."
+      case .decodingError(let error):
+        return "Failed to decode the API response: \(error.localizedDescription)"
+      case .apiError(let message):
+        return "API error: \(message)"
+      case .unexpectedResponse(let statusCode):
+        return "Unexpected response from the API. Status code: \(statusCode)"
+      }
+    }
   }
 
   /// Performs a search operation on the specified index.
@@ -30,40 +121,67 @@ public class SearchbaseSDK {
   ///   - offset: Optional offset for pagination.
   /// - Returns: A SearchResponse containing the search results.
   /// - Throws: A SearchError if the operation fails.
-  public func search(
-    index: String, filters: [Filter]? = nil, select: [String]? = nil, limit: Int? = nil,
-    offset: Int? = nil
-  ) async throws -> SearchResponse {
-    guard let url = URL(string: "\(baseURL)/search") else {
-      throw SearchError.invalidURL
+    public func search(
+        index: String, filters: [Filter]? = nil, select: [String]? = nil, limit: Int? = nil,
+        offset: Int? = nil
+    ) async throws -> SearchResponse {
+        guard let url = URL(string: "\(baseURL)/search") else {
+            throw SearchError.invalidURL
+        }
+
+        var queryDict: [String: Any] = ["index": index]
+        if let filters = filters { queryDict["filters"] = filters.map { $0.toDictionary() } }
+        if let select = select { queryDict["select"] = select }
+        if let limit = limit { queryDict["limit"] = limit }
+        if let offset = offset { queryDict["offset"] = offset }
+
+        let body = ["query": queryDict]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue(apiToken, forHTTPHeaderField: "x-searchbase-token")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        print("Request URL: \(url)")
+        print("Request Headers: \(request.allHTTPHeaderFields ?? [:])")
+        print("Request Body: \(String(data: request.httpBody ?? Data(), encoding: .utf8) ?? "")")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SearchError.unexpectedResponse(0)
+        }
+
+        print("Response status code: \(httpResponse.statusCode)")
+        print("Response headers: \(httpResponse.allHeaderFields)")
+        print("Response body: \(String(data: data, encoding: .utf8) ?? "")")
+
+        switch httpResponse.statusCode {
+        case 200...299:
+            do {
+                let decoder = JSONDecoder()
+                let searchResponse = try decoder.decode(SearchResponse.self, from: data)
+                return searchResponse
+            } catch {
+                print("Decoding error: \(error)")
+                if let decodingError = error as? DecodingError {
+                    print("Decoding error details: \(decodingError)")
+                }
+                throw SearchError.decodingError(error)
+            }
+        case 400...499:
+            let errorBody = String(data: data, encoding: .utf8) ?? "No error message"
+            print("API Error Body: \(errorBody)")
+            if let apiError = try? JSONDecoder().decode(APIError.self, from: data) {
+                throw SearchError.apiError(apiError.message)
+            } else {
+                throw SearchError.unexpectedResponse(httpResponse.statusCode)
+            }
+        default:
+            throw SearchError.unexpectedResponse(httpResponse.statusCode)
+        }
     }
-
-    var queryDict: [String: Any] = ["index": index]
-    if let filters = filters { queryDict["filters"] = filters.map { $0.toDictionary() } }
-    if let select = select { queryDict["select"] = select }
-    if let limit = limit { queryDict["limit"] = limit }
-    if let offset = offset { queryDict["offset"] = offset }
-
-    let body = ["query": queryDict]
-
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.addValue(apiToken, forHTTPHeaderField: "x-searchbase-token")
-    request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-    let (data, _) = try await URLSession.shared.data(for: request)
-
-    do {
-      return try JSONDecoder().decode(SearchResponse.self, from: data)
-    } catch {
-      if let apiError = try? JSONDecoder().decode(APIError.self, from: data) {
-        throw SearchError.apiError(apiError.message)
-      } else {
-        throw SearchError.decodingError(error)
-      }
-    }
-  }
 
   /// Performs a search operation that automatically fetches all results, handling pagination internally.
   /// - Parameters:
@@ -85,10 +203,10 @@ public class SearchbaseSDK {
           do {
             let response = try await self.search(
               index: index, filters: filters, select: select, limit: batchSize, offset: offset)
-            continuation.yield(response.results)
+            continuation.yield(response.records)
 
-            totalFetched += response.results.count
-            offset += batchSize
+            totalFetched += response.records.count
+            offset = response.range.end
             total = response.total
           } catch {
             continuation.finish(throwing: error)
@@ -121,20 +239,6 @@ public struct Filter: Codable {
       "value": value.value,
     ]
   }
-}
-
-/// Represents the response from a search operation.
-public struct SearchResponse: Codable {
-  public let results: [SearchResult]
-  public let total: Int
-  public let limit: Int
-  public let offset: Int
-}
-
-/// Represents a single result in a search operation.
-public struct SearchResult: Codable {
-  public let id: String
-  public let fields: [String: AnyCodable]
 }
 
 /// A type that can encode and decode values of any type.

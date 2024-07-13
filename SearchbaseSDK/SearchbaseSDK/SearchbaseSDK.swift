@@ -35,24 +35,19 @@ public class SearchbaseSDK {
     }
   }
 
-  public func search(
-    index: String,
-    filters: [Filter]? = nil,
-    sort: [Sort]? = nil,
-    select: [String]? = nil,
-    limit: Int? = nil,
-    offset: Int? = nil
-  ) async throws -> SearchResponse {
+  public func search<T: Decodable>(
+    options: SearchOptions
+  ) async throws -> SearchResponse<T> {
     guard let url = URL(string: "\(baseURL)/search") else {
       throw SearchError.invalidURL
     }
 
-    var queryDict: [String: Any] = ["index": index]
-    if let filters = filters { queryDict["filters"] = filters.map { $0.toDictionary() } }
-    if let sort = sort { queryDict["sort"] = sort.map { $0.toDictionary() } }
-    if let select = select { queryDict["select"] = select }
-    if let limit = limit { queryDict["limit"] = limit }
-    if let offset = offset { queryDict["offset"] = offset }
+    var queryDict: [String: Any] = ["index": options.index]
+    if let filters = options.filters { queryDict["filters"] = filters.map { $0.toDictionary() } }
+    if let sort = options.sort { queryDict["sort"] = sort.map { $0.toDictionary() } }
+    if let select = options.select { queryDict["select"] = select }
+    if let limit = options.limit { queryDict["limit"] = limit }
+    if let offset = options.offset { queryDict["offset"] = offset }
 
     let body = ["query": queryDict]
 
@@ -61,9 +56,6 @@ public class SearchbaseSDK {
     request.addValue("application/json", forHTTPHeaderField: "Content-Type")
     request.addValue(apiToken, forHTTPHeaderField: "x-searchbase-token")
     request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-    // Log the request as cURL
-    logAsCurl(request: request, body: body)
 
     let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -75,7 +67,7 @@ public class SearchbaseSDK {
     case 200...299:
       do {
         let decoder = JSONDecoder()
-        let searchResponse = try decoder.decode(SearchResponse.self, from: data)
+        let searchResponse = try decoder.decode(SearchResponse<T>.self, from: data)
         return searchResponse
       } catch {
         print("Decoding error: \(error)")
@@ -92,37 +84,9 @@ public class SearchbaseSDK {
     }
   }
 
-  private func logAsCurl(request: URLRequest, body: [String: Any]) {
-    var components = ["curl -i -X \(request.httpMethod ?? "POST")"]
-
-    if let url = request.url {
-      components.append("'\(url.absoluteString)'")
-    }
-
-    request.allHTTPHeaderFields?.forEach { field, value in
-      components.append("-H '\(field): \(value)'")
-    }
-
-    if let httpBody = request.httpBody, let bodyString = String(data: httpBody, encoding: .utf8) {
-      components.append("-d '\(bodyString)'")
-    } else if let jsonBody = try? JSONSerialization.data(
-      withJSONObject: body, options: [.prettyPrinted]),
-      let bodyString = String(data: jsonBody, encoding: .utf8)
-    {
-      components.append("-d '\(bodyString)'")
-    }
-
-    print("cURL command:")
-    print(components.joined(separator: " \\\n\t"))
-  }
-
-  public func searchAll(
-    index: String,
-    filters: [Filter]? = nil,
-    sort: [Sort]? = nil,
-    select: [String]? = nil,
-    batchSize: Int = 100
-  ) -> AsyncThrowingStream<[SearchResult], Error> {
+  public func searchAll<T: Decodable>(
+    options: SearchOptions
+  ) -> AsyncThrowingStream<[T], Error> {
     AsyncThrowingStream { continuation in
       Task {
         var offset = 0
@@ -131,14 +95,11 @@ public class SearchbaseSDK {
 
         repeat {
           do {
-            let response = try await self.search(
-              index: index,
-              filters: filters,
-              sort: sort,
-              select: select,
-              limit: batchSize,
-              offset: offset
-            )
+            var currentOptions = options
+            currentOptions.limit = 100  // Set batch size
+            currentOptions.offset = offset
+
+            let response: SearchResponse<T> = try await self.search(options: currentOptions)
             continuation.yield(response.records)
 
             totalFetched += response.records.count
@@ -154,103 +115,53 @@ public class SearchbaseSDK {
       }
     }
   }
+}
 
-  /// Represents a filter to be applied in a search operation.
-  public struct Filter: Codable {
-    public let field: String
-    public let op: String
-    public let value: AnyCodable
+public struct SearchOptions {
+  public let index: String
+  public var filters: [SearchFilter]?
+  public var sort: [Sort]?
+  public var select: [String]?
+  public var limit: Int?
+  public var offset: Int?
 
-    public init(field: String, op: String, value: Any) {
-      self.field = field
-      self.op = op
-      self.value = AnyCodable(value)
-    }
-
-    public func toDictionary() -> [String: Any] {
-      return [
-        "field": field,
-        "op": op,
-        "value": value.value,
-      ]
-    }
+  public init(
+    index: String,
+    filters: [SearchFilter]? = nil,
+    sort: [Sort]? = nil,
+    select: [String]? = nil,
+    limit: Int? = nil,
+    offset: Int? = nil
+  ) {
+    self.index = index
+    self.filters = filters
+    self.sort = sort
+    self.select = select
+    self.limit = limit
+    self.offset = offset
   }
 }
 
-public struct SearchResponse: Decodable {
-  public let total: Int
-  public let range: Range
-  public let records: [SearchResult]
+public struct SearchFilter: Codable {
+  public let field: String
+  public let op: String
+  public let value: AnyCodable
 
-  public struct Range: Decodable {
-    public let start: Int
-    public let end: Int
+  public init(field: String, op: String, value: Any) {
+    self.field = field
+    self.op = op
+    self.value = AnyCodable(value)
   }
 
-  public init(from decoder: Decoder) throws {
-    let container = try decoder.container(keyedBy: CodingKeys.self)
-    total = try container.decode(Int.self, forKey: .total)
-    range = try container.decode(Range.self, forKey: .range)
-    records = try container.decode([SearchResult].self, forKey: .records)
-  }
-
-  private enum CodingKeys: String, CodingKey {
-    case total, range, records
+  public func toDictionary() -> [String: Any] {
+    return [
+      "field": field,
+      "op": op,
+      "value": value.value,
+    ]
   }
 }
 
-public struct SearchResult: Decodable {
-  public let id: String
-  public let title: String
-  public let url: String
-  public let rent: Int
-  public let bedrooms: Int
-  public let bathrooms: Int
-  public let source: String
-  public let neighborhood: Int
-  public let originalNeighborhood: String
-  public let thumbnailURLs: [String]
-  public let createdAt: Timestamp
-
-  public init(from decoder: Decoder) throws {
-    let container = try decoder.container(keyedBy: CodingKeys.self)
-    id = try container.decode(String.self, forKey: .id)
-    title = try container.decode(String.self, forKey: .title)
-    url = try container.decode(String.self, forKey: .url)
-    rent = try container.decode(Int.self, forKey: .rent)
-    bedrooms = try container.decode(Int.self, forKey: .bedrooms)
-    bathrooms = try container.decode(Int.self, forKey: .bathrooms)
-    source = try container.decode(String.self, forKey: .source)
-    neighborhood = try container.decode(Int.self, forKey: .neighborhood)
-    originalNeighborhood = try container.decode(String.self, forKey: .originalNeighborhood)
-    thumbnailURLs = try container.decode([String].self, forKey: .thumbnailURLs)
-    createdAt = try container.decode(Timestamp.self, forKey: .createdAt)
-  }
-
-  private enum CodingKeys: String, CodingKey {
-    case id, title, url, rent, bedrooms, bathrooms, source, neighborhood, originalNeighborhood
-    case thumbnailURLs
-    case createdAt
-  }
-
-}
-
-public struct Timestamp: Decodable {
-  public let _seconds: Int64
-  public let _nanoseconds: Int64
-
-  public init(from decoder: Decoder) throws {
-    let container = try decoder.container(keyedBy: CodingKeys.self)
-    _seconds = try container.decode(Int64.self, forKey: ._seconds)
-    _nanoseconds = try container.decode(Int64.self, forKey: ._nanoseconds)
-  }
-
-  private enum CodingKeys: String, CodingKey {
-    case _seconds, _nanoseconds
-  }
-}
-
-/// Represents a sort option for search operations.
 public struct Sort: Codable {
   public let field: String
   public let direction: SortDirection
@@ -268,13 +179,22 @@ public struct Sort: Codable {
   }
 }
 
-/// Represents the direction of sorting.
 public enum SortDirection: String, Codable {
   case ascending = "ASC"
   case descending = "DESC"
 }
 
-/// A type that can encode and decode values of any type.
+public struct SearchResponse<T: Decodable>: Decodable {
+  public let total: Int
+  public let range: Range
+  public let records: [T]
+
+  public struct Range: Decodable {
+    public let start: Int
+    public let end: Int
+  }
+}
+
 public struct AnyCodable: Codable {
   public let value: Any
 
@@ -326,7 +246,6 @@ public struct AnyCodable: Codable {
   }
 }
 
-/// Represents an error returned by the API.
 struct APIError: Codable {
   let message: String
 }

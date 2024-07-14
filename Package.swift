@@ -19,7 +19,7 @@ let package = Package(
     .target(
       name: "SearchbaseSDK",
       dependencies: [],
-      path: "SearchbaseSDK/SearchbaseSDK"),  // Updated path
+      path: "SearchbaseSDK/SearchbaseSDK"),
     .testTarget(
       name: "SearchbaseSDKTests",
       dependencies: ["SearchbaseSDK"]),
